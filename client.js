@@ -42,11 +42,12 @@ class Request {
       }
       // 监听 connection 的 data
       connection.on('data', data => {
-        console.log(data.toString())
+        // console.log(data.toString())
         // 进行解析
         parser.receive(data.toString())
         // 解析完成
         if(parser.isFinished) {
+          // 返回解析内容0
           resolve(parser.response)
           // 关闭连接
           connection.end()
@@ -91,6 +92,20 @@ class ResponseParser {
     this.headerValue = ''
     this.bodyParser = null
   }
+  // 获取完成状态
+  get isFinished () {
+    return this.bodyParser && this.bodyParser.isFinished
+  }
+  // 给出请求返回
+  get response () {
+    this.statusLine.match(/HTTP\/1.1 ([0-9]+) ([\s\S]+)/)
+    return {
+      statusCode: RegExp.$1,
+      statusText: RegExp.$2,
+      headers: this.headers,
+      body: this.bodyParser.content.join('')
+    }
+  }
   // 接受字符串逐个进行处理
   receive(string) {
     for(let i = 0; i< string.length; i++) {
@@ -118,6 +133,10 @@ class ResponseParser {
       } else if (char === '\r') {
         // 如果仍然等来了一个 '\r' 则表示请求头结束了
         this.current = this.WAITING_HEADER_BLOCK_END
+        // 'Transfer-Encoding' 的值有很多，node 默认 chunked
+        if (this.headers['Transfer-Encoding'] === 'chunked') {
+          this.bodyParser = new TrunkedBodyParser()
+        }
       } else {
         this.headerName += char
       }
@@ -144,10 +163,62 @@ class ResponseParser {
         this.current = this.WAITING_BODY
       }
     } else if (this.current === this.WAITING_BODY) {
-      console.log(char)
+      // console.log(char)
+      this.bodyParser.receiveChar(char)
     }
   }
 }
+
+class TrunkedBodyParser {
+  constructor() {
+    this.WAITING_LENGTH = 0
+    this.WAITING_LENGTH_LINE_END = 1
+
+    this.READING_TRUNK = 2
+    this.WAITING_NEW_LINE = 3
+    this.WAITING_NEW_LINE_END = 4
+    this.length = 0
+    this.content = []
+    this.isFinished = false
+    this.current = this.WAITING_LENGTH
+  }
+
+  receiveChar(char) {
+    if (this.current === this.WAITING_LENGTH) {
+      if (char === '\r') {
+        if (this.length === 0) {
+          this.isFinished = true
+        }
+        this.current = this.WAITING_LENGTH_LINE_END
+      } else {
+        // 首位是一个 16 进制的标识，body的长度
+        this.length *= 16
+        this.length += parseInt(char, 16)
+      }
+    } else if (this.current === this.WAITING_LENGTH_LINE_END) {
+      // 首位文本长度获取完成
+      if (char === '\n') {
+        this.current = this.READING_TRUNK
+      }
+    } else if (this.current === this.READING_TRUNK) {
+      this.content.push(char)
+      this.length --
+      if (this.length === 0) {
+        this.current = this.WAITING_NEW_LINE
+      }
+      // console.log(this.content.join('')) 
+    } else if (this.current === this.WAITING_NEW_LINE) {
+      if (char === '\r') {
+        this.current = this.WAITING_NEW_LINE_END
+      }
+    } else if (this.current === this.WAITING_NEW_LINE_END) {
+      if (char === '\n') {
+        this.current = this.WAITING_LENGTH
+      }
+    }
+  }
+}
+
       // "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nDate: Sun, 26 Jul 2020 04:31:19 GMT\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\nd\r\n Hello World\n\r\n0\r\n\r\n"
 void async function () {
   let request = new Request({
